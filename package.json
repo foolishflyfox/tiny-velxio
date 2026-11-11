@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build --configLoader runner",
-    "test": "node --experimental-strip-types --test src/circuit.test.mjs"
+    "test": "node --experimental-strip-types --test src/*.test.mjs"
   },
   "dependencies": {
     "vue": "3.5.31"

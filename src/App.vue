@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import {
   BOARD_HEIGHT, BOARD_WIDTH, CANVAS_HEIGHT, CANVAS_WIDTH, COLS, PITCH, RAILS, ROWS, ROW_Y, X0,
   buildNetlist, endpointKey, endpointPoint, findSeat, holeGroup, holePoint,
   type Board, type Endpoint, type Hole, type Part, type PartType, type Wire,
 } from './circuit';
 import { NgSpiceInteractive } from './spice/NgSpiceInteractive';
+import { CIRCUIT_STORAGE_KEY, decodeCircuit, encodeCircuit } from './persistence';
 
 const palette: { type: PartType; title: string; description: string; mark: string }[] = [
   { type: 'source', title: '电源', description: '5V 直流', mark: '⏚' },
@@ -13,9 +14,12 @@ const palette: { type: PartType; title: string; description: string; mark: strin
   { type: 'resistor', title: '电阻', description: '默认 220Ω', mark: 'Ω' },
   { type: 'switch', title: '开关', description: '点击切换通断', mark: '⎋' },
 ];
-const parts = ref<Part[]>([]);
-const boards = ref<Board[]>([]);
-const wires = ref<Wire[]>([]);
+let storedCircuit: string | null = null;
+try { storedCircuit = window.localStorage.getItem(CIRCUIT_STORAGE_KEY); } catch { /* Storage may be disabled. */ }
+const restoredCircuit = decodeCircuit(storedCircuit);
+const parts = ref<Part[]>(restoredCircuit?.parts ?? []);
+const boards = ref<Board[]>(restoredCircuit?.boards ?? []);
+const wires = ref<Wire[]>(restoredCircuit?.wires ?? []);
 const canvasRef = ref<SVGSVGElement | null>(null);
 const scrollerRef = ref<HTMLDivElement | null>(null);
 const selectedPartId = ref<string | null>(null);
@@ -23,7 +27,9 @@ const selectedBoardId = ref<string | null>(null);
 const selectedWireId = ref<string | null>(null);
 const wireStart = ref<Endpoint | null>(null);
 const cursor = ref<{ x: number; y: number } | null>(null);
-const status = ref('拖入元件，然后点击两个引脚接线；面包板可以按需添加。');
+const status = ref(restoredCircuit
+  ? '已恢复上次编辑的电路，点击“开始运行”可重新仿真。'
+  : storedCircuit ? '本地电路数据无法读取，已打开空白画布。' : '拖入元件，然后点击两个引脚接线；面包板可以按需添加。');
 const phase = ref<'idle' | 'starting' | 'running' | 'error'>('idle');
 const ledCurrents = ref<Record<string, number>>({});
 const sourceCurrent = ref<number | null>(null);
@@ -36,11 +42,21 @@ const allHoles = computed(() => {
   for (let col = 1; col <= 50; col++) for (const rail of RAILS) holes.push(`${rail}.${col}`);
   return holes;
 });
-let sequence = 0;
+let sequence = restoredCircuit?.nextSequence ?? 0;
 let solver: NgSpiceInteractive | null = null;
 let runEpoch = 0;
 const pendingSwitches = new Map<string, boolean>();
 let panning: { pointerId: number; clientX: number; clientY: number } | null = null;
+
+function saveCircuit() {
+  try {
+    window.localStorage.setItem(CIRCUIT_STORAGE_KEY, encodeCircuit(parts.value, boards.value, wires.value));
+  } catch {
+    status.value = '浏览器无法保存电路；刷新后本次更改可能丢失。';
+  }
+}
+watch([parts, boards, wires], saveCircuit, { deep: true });
+window.addEventListener('pagehide', saveCircuit);
 
 function markDirty(message = '电路已更改，点击“开始运行”查看结果。') {
   if (phase.value === 'starting' || phase.value === 'running') stopSimulation();
@@ -178,7 +194,7 @@ function onKeydown(event: KeyboardEvent) {
   }
 }
 window.addEventListener('keydown', onKeydown);
-onUnmounted(() => { window.removeEventListener('keydown', onKeydown); stopSimulation(); });
+onUnmounted(() => { window.removeEventListener('keydown', onKeydown); window.removeEventListener('pagehide', saveCircuit); stopSimulation(); });
 
 let moving: { type: 'part' | 'board'; id: string; clientX: number; clientY: number; x: number; y: number; moved: boolean } | null = null;
 function beginMove(event: PointerEvent, type: 'part' | 'board', id: string) {
