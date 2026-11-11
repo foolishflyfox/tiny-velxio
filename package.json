@@ -1,0 +1,20 @@
+{
+  "name": "tiny-velxio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build --configLoader runner",
+    "test": "node --experimental-strip-types --test src/circuit.test.mjs"
+  },
+  "dependencies": {
+    "vue": "3.5.31"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "6.0.5",
+    "typescript": "5.9.3",
+    "vite": "7.3.1",
+    "vue-tsc": "3.2.6"
+  }
+}
