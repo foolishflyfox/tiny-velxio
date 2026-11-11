@@ -2,7 +2,7 @@
 import { computed, onUnmounted, ref, watch } from 'vue';
 import {
   BOARD_HEIGHT, BOARD_WIDTH, CANVAS_HEIGHT, CANVAS_WIDTH, COLS, PITCH, RAILS, ROWS, ROW_Y, X0,
-  buildNetlist, endpointKey, endpointPoint, findSeat, holeGroup, holePoint,
+  buildNetlist, endpointKey, endpointPoint, findSeat, holeGroup, holePoint, ledShouldBurn,
   type Board, type Endpoint, type Hole, type Part, type PartType, type Wire,
 } from './circuit';
 import { NgSpiceInteractive } from './spice/NgSpiceInteractive';
@@ -32,6 +32,7 @@ const status = ref(restoredCircuit
   : storedCircuit ? '本地电路数据无法读取，已打开空白画布。' : '拖入元件，然后点击两个引脚接线；面包板可以按需添加。');
 const phase = ref<'idle' | 'starting' | 'running' | 'error'>('idle');
 const ledCurrents = ref<Record<string, number>>({});
+const burntLedIds = ref<Set<string>>(new Set());
 const sourceCurrent = ref<number | null>(null);
 const simulationTime = ref(0);
 const selectedPart = computed(() => parts.value.find((p) => p.id === selectedPartId.value) ?? null);
@@ -266,6 +267,7 @@ function stopSimulation() {
   solver?.dispose();
   solver = null;
   ledCurrents.value = {};
+  burntLedIds.value = new Set();
   sourceCurrent.value = null;
   simulationTime.value = 0;
   phase.value = 'idle';
@@ -282,6 +284,7 @@ async function startSimulation() {
   const engine = new NgSpiceInteractive();
   solver = engine;
   simulationTime.value = 0;
+  burntLedIds.value = new Set();
   phase.value = 'starting';
   status.value = '正在启动 ngspice 瞬态仿真…';
   try {
@@ -311,9 +314,19 @@ async function startSimulation() {
         nextCurrents[id] = Math.max(0, current);
       }
       ledCurrents.value = nextCurrents;
+      for (const [id, current] of Object.entries(nextCurrents)) {
+        if (!ledShouldBurn(current) || burntLedIds.value.has(id)) continue;
+        const control = deck.ledFailureControlNames.get(id);
+        if (!control) throw new Error(`找不到 ${id} 的 LED 故障控制源`);
+        const changed = await engine.command(`alter ${control} dc 0`);
+        if (epoch !== runEpoch) return;
+        if (changed.rc !== 0) throw new Error(changed.stderr.at(-1) ?? `无法断开已烧坏的 LED ${id}`);
+        burntLedIds.value = new Set([...burntLedIds.value, id]);
+      }
       sourceCurrent.value = Math.abs(values.get(deck.sourceCurrentNames[0] ?? '') ?? 0);
-      const lit = Object.values(nextCurrents).filter((current) => current > 0.0001).length;
-      status.value = `运行中 · 仿真时间 ${time.toFixed(3)} s · ${lit} 个 LED 点亮 · 电源电流 ${((sourceCurrent.value ?? 0) * 1000).toFixed(1)} mA`;
+      const lit = Object.entries(nextCurrents).filter(([id, current]) => !burntLedIds.value.has(id) && current > 0.0001).length;
+      const burnt = burntLedIds.value.size ? ` · ${burntLedIds.value.size} 个 LED 已烧坏` : '';
+      status.value = `运行中 · 仿真时间 ${time.toFixed(3)} s · ${lit} 个 LED 点亮${burnt} · 电源电流 ${((sourceCurrent.value ?? 0) * 1000).toFixed(1)} mA`;
     };
     phase.value = 'running';
     await sample();
@@ -345,7 +358,7 @@ async function startSimulation() {
     status.value = `运行失败：${error instanceof Error ? error.message : String(error)}`;
   }
 }
-function ledLit(id: string) { return (ledCurrents.value[id] ?? 0) > 0.0001; }
+function ledLit(id: string) { return !burntLedIds.value.has(id) && (ledCurrents.value[id] ?? 0) > 0.0001; }
 function wirePath(wire: Wire) {
   const a = endpointPoint(wire.from, parts.value, boards.value);
   const b = endpointPoint(wire.to, parts.value, boards.value);
@@ -376,6 +389,7 @@ function wirePath(wire: Wire) {
         <strong>{{ palette.find((entry) => entry.type === selectedPart?.type)?.title }} <small>#{{ selectedPart.id.slice(1) }}</small></strong>
         <label v-if="selectedPart.type === 'resistor'" class="value-label">电阻值（Ω）<input type="number" min="1" max="1000000" step="1" :value="selectedPart.resistance" @change="updateResistance" /></label>
         <p v-if="selectedPart.type === 'led'">左端 A 为正极，右端 C 为负极。</p>
+        <p v-if="selectedPart.type === 'led' && burntLedIds.has(selectedPart.id)" class="burnt-notice">LED 已烧坏，停止或重新运行后恢复。</p>
         <p v-if="selectedPart.type === 'source'">左端为 +5V，右端为负极。</p>
         <button v-if="selectedPart.type === 'switch'" class="switch-toggle" :aria-pressed="selectedPart.closed" @click="toggleSwitch(selectedPart)">{{ selectedPart.closed ? '闭合 · 点击断开' : '断开 · 点击闭合' }}</button>
         <p class="selection-foot">拖动元件可调整位置。</p>
@@ -408,14 +422,14 @@ function wirePath(wire: Wire) {
             </g>
             <g class="wires"><g v-for="wire in wires" :key="wire.id" :class="{ selected: selectedWireId === wire.id }" @click.stop="selectedWireId = wire.id; selectedPartId = null; selectedBoardId = null; wireStart = null"><path :d="wirePath(wire)" class="wire-hit" /><path :d="wirePath(wire)" class="wire-stroke" /><circle v-if="endpointPoint(wire.from, parts, boards)" :cx="endpointPoint(wire.from, parts, boards)?.x" :cy="endpointPoint(wire.from, parts, boards)?.y" r="5" /><circle v-if="endpointPoint(wire.to, parts, boards)" :cx="endpointPoint(wire.to, parts, boards)?.x" :cy="endpointPoint(wire.to, parts, boards)?.y" r="5" /></g></g>
             <path v-if="wireStart && cursor && endpointPoint(wireStart, parts, boards)" class="preview-wire" :d="`M ${endpointPoint(wireStart, parts, boards)?.x} ${endpointPoint(wireStart, parts, boards)?.y} L ${cursor.x} ${cursor.y}`" />
-            <g v-for="part in parts" :key="part.id" class="part" :class="[part.type, { selected: selectedPartId === part.id, lit: part.type === 'led' && ledLit(part.id) }]" :transform="`translate(${part.x}, ${part.y})`">
+            <g v-for="part in parts" :key="part.id" class="part" :class="[part.type, { selected: selectedPartId === part.id, lit: part.type === 'led' && ledLit(part.id), burnt: burntLedIds.has(part.id) }]" :transform="`translate(${part.x}, ${part.y})`">
               <g @pointerdown="beginMove($event, 'part', part.id)" @pointermove="continueMove" @pointerup="endMove" @pointercancel="endMove">
                 <line x1="0" y1="0" x2="0" y2="-18" class="lead" /><line x1="60" y1="0" x2="60" y2="-18" class="lead" /><line x1="0" y1="-18" x2="12" y2="-18" class="lead" /><line x1="48" y1="-18" x2="60" y2="-18" class="lead" />
                 <rect v-if="part.type === 'source'" x="10" y="-42" width="40" height="47" rx="7" class="part-body source-body" />
                 <template v-if="part.type === 'source'"><text x="30" y="-23" class="part-text source-text">5V</text><text x="17" y="-7" class="terminal-text positive">＋</text><text x="43" y="-7" class="terminal-text">−</text></template>
                 <template v-if="part.type === 'resistor'"><rect x="12" y="-30" width="36" height="23" rx="5" class="part-body resistor-body" /><path d="M 17 -19 l 5 -6 l 5 12 l 5 -12 l 5 12 l 5 -6" fill="none" stroke="#775846" stroke-width="1.8" pointer-events="none" /><text x="30" y="-34" class="value-text">{{ part.resistance }}Ω</text></template>
                 <template v-if="part.type === 'switch'"><rect x="11" y="-34" width="38" height="27" rx="5" class="part-body switch-body" :class="{ closed: part.closed }" /><circle cx="18" cy="-20" r="2.5" class="switch-contact" /><circle cx="42" cy="-20" r="2.5" class="switch-contact" /><line x1="18" y1="-20" :x2="part.closed ? 42 : 39" :y2="part.closed ? -20 : -29" class="switch-lever" /><text x="30" y="-39" class="value-text switch-label">{{ part.closed ? 'ON' : 'OFF' }}</text></template>
-                <template v-if="part.type === 'led'"><circle v-if="ledLit(part.id)" cx="30" cy="-19" r="19" fill="#ff483e" opacity=".6" filter="url(#ledGlow)" /><circle cx="30" cy="-19" r="13" class="led-body" /><path d="M 25 -25 L 25 -13 L 35 -19 Z" fill="#fff0e5" pointer-events="none" /><line x1="37" y1="-25" x2="37" y2="-13" stroke="#fff0e5" stroke-width="2" pointer-events="none" /><text x="5" y="-32" class="terminal-text">A</text><text x="55" y="-32" class="terminal-text">C</text></template>
+                <template v-if="part.type === 'led'"><circle v-if="ledLit(part.id)" cx="30" cy="-19" r="19" fill="#ff483e" opacity=".6" filter="url(#ledGlow)" /><circle cx="30" cy="-19" r="13" class="led-body" /><path v-if="burntLedIds.has(part.id)" d="M 24 -28 L 29 -21 L 26 -16 L 34 -10" class="led-crack" /><path v-else d="M 25 -25 L 25 -13 L 35 -19 Z" fill="#fff0e5" pointer-events="none" /><line v-if="!burntLedIds.has(part.id)" x1="37" y1="-25" x2="37" y2="-13" stroke="#fff0e5" stroke-width="2" pointer-events="none" /><text x="5" y="-32" class="terminal-text">A</text><text x="55" y="-32" class="terminal-text">C</text><text v-if="burntLedIds.has(part.id)" x="30" y="-38" class="burnt-label">烧坏</text></template>
               </g>
               <circle cx="0" cy="0" r="6" class="pin-tip" @pointerdown.stop @click="onEndpointClick({ type: 'pin', partId: part.id, pin: 'a' }, $event)" /><circle cx="60" cy="0" r="6" class="pin-tip" @pointerdown.stop @click="onEndpointClick({ type: 'pin', partId: part.id, pin: 'b' }, $event)" />
             </g>

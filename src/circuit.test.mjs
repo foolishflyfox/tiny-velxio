@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildNetlist, endpointPoint, findSeat, holeGroup, holePoint } from './circuit.ts';
+import { buildNetlist, endpointPoint, findSeat, holeGroup, holePoint, ledShouldBurn } from './circuit.ts';
 
 const part = (id, type, x, y, resistance = 220) => ({ id, type, x, y, resistance });
 const pin = (partId, pin) => ({ type: 'pin', partId, pin });
@@ -16,10 +16,20 @@ test('direct pin wiring produces a solvable series circuit without a breadboard'
   ];
   const deck = buildNetlist(parts, wires);
   assert.match(deck.text, /R_p2 n\d+ n\d+ 330/);
-  assert.match(deck.text, /D_p3 p3_internal 0 DRED/);
+  assert.match(deck.text, /D_p3 p3_internal p3_after_diode DRED/);
+  assert.match(deck.text, /S_p3_failure p3_after_diode 0 p3_failure_ctrl 0 VELXIO_SWITCH/);
+  assert.match(deck.text, /V_p3_failure_ctrl p3_failure_ctrl 0 DC 5/);
   assert.equal(deck.ledSenseNames.get('p3'), 'v_p3_sense#branch');
+  assert.equal(deck.ledFailureControlNames.get('p3'), 'V_p3_failure_ctrl');
   assert.equal(deck.shortedSource, false);
   assert.deepEqual(endpointPoint(pin('p2', 'b'), parts, []), { x: 320, y: 100 });
+});
+
+test('LED burnout begins only above 20 mA of forward current', () => {
+  assert.equal(ledShouldBurn(0.019999), false);
+  assert.equal(ledShouldBurn(0.02), false);
+  assert.equal(ledShouldBurn(0.020001), true);
+  assert.equal(ledShouldBurn(-1), false);
 });
 
 test('a breadboard joins its five-hole strips and power rails', () => {
@@ -44,7 +54,8 @@ test('seated pins connect through board groups and board deletion does not affec
     wire('w3', pin('p3', 'b'), pin('p1', 'b')),
   ];
   const deck = buildNetlist([source, resistor, led], wires);
-  assert.match(deck.text, /D_p3 p3_internal 0 DRED/);
+  assert.match(deck.text, /D_p3 p3_internal p3_after_diode DRED/);
+  assert.match(deck.text, /S_p3_failure p3_after_diode 0 p3_failure_ctrl 0 VELXIO_SWITCH/);
   assert.equal(deck.shortedSource, false);
   assert.equal(buildNetlist([source], [wire('short', pin('p1', 'a'), pin('p1', 'b'))]).shortedSource, true);
 });

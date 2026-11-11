@@ -25,6 +25,10 @@ export const BOARD_WIDTH = 1100;
 export const BOARD_HEIGHT = 445;
 export const CANVAS_WIDTH = 1500;
 export const CANVAS_HEIGHT = 1000;
+export const LED_BURN_CURRENT = 0.02;
+export function ledShouldBurn(forwardCurrent: number): boolean {
+  return forwardCurrent > LED_BURN_CURRENT;
+}
 export const ROWS: readonly Row[] = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'];
 export const ROW_Y: Record<Row, number> = { a: 134, b: 152, c: 170, d: 188, e: 206, f: 246, g: 264, h: 282, i: 300, j: 318 };
 export const RAIL_Y: Record<Rail, number> = { tn: 59, tp: 79, bn: 367, bp: 387 };
@@ -96,6 +100,7 @@ class UnionFind {
 export interface Netlist {
   text: string;
   ledSenseNames: Map<string, string>;
+  ledFailureControlNames: Map<string, string>;
   sourceCurrentNames: string[];
   switchControlNames: Map<string, string>;
   shortedSource: boolean;
@@ -123,6 +128,7 @@ export function buildNetlist(parts: readonly Part[], wires: readonly Wire[]): Ne
 
   const cards: string[] = ['Tiny Velxio circuit'];
   const ledSenseNames = new Map<string, string>();
+  const ledFailureControlNames = new Map<string, string>();
   const sourceCurrentNames: string[] = [];
   const switchControlNames = new Map<string, string>();
   let shortedSource = false;
@@ -145,12 +151,16 @@ export function buildNetlist(parts: readonly Part[], wires: readonly Wire[]): Ne
       switchControlNames.set(part.id, control);
     } else if (part.type === 'led') {
       const sense = `V_${part.id}_sense`;
+      const failureControl = `V_${part.id}_failure_ctrl`;
       cards.push(`${sense} ${a} ${part.id}_internal DC 0`);
-      cards.push(`D_${part.id} ${part.id}_internal ${b} DRED`);
+      cards.push(`D_${part.id} ${part.id}_internal ${part.id}_after_diode DRED`);
+      cards.push(`S_${part.id}_failure ${part.id}_after_diode ${b} ${part.id}_failure_ctrl 0 VELXIO_SWITCH`);
+      cards.push(`${failureControl} ${part.id}_failure_ctrl 0 DC 5`);
       ledSenseNames.set(part.id, `${sense.toLowerCase()}#branch`);
+      ledFailureControlNames.set(part.id, failureControl);
     }
   }
   for (const name of names.values()) cards.push(`R_bleed_${name} ${name} 0 100Meg`);
   cards.push('.model DRED D(Is=1e-14 N=2)', '.model VELXIO_SWITCH SW(Ron=0.01 Roff=1G Vt=2.5 Vh=0.1)', '.end');
-  return { text: cards.join('\n'), ledSenseNames, sourceCurrentNames, switchControlNames, shortedSource };
+  return { text: cards.join('\n'), ledSenseNames, ledFailureControlNames, sourceCurrentNames, switchControlNames, shortedSource };
 }
