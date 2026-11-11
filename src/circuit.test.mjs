@@ -48,3 +48,25 @@ test('seated pins connect through board groups and board deletion does not affec
   assert.equal(deck.shortedSource, false);
   assert.equal(buildNetlist([source], [wire('short', pin('p1', 'a'), pin('p1', 'b'))]).shortedSource, true);
 });
+
+test('a switch keeps its topology and exposes a controllable SPICE source', () => {
+  const source = part('p1', 'source', 100, 100);
+  const resistor = part('p2', 'resistor', 230, 100, 330);
+  const led = part('p3', 'led', 370, 100);
+  const switchPart = { ...part('p4', 'switch', 510, 100), closed: false };
+  const wires = [
+    wire('w1', pin('p1', 'a'), pin('p2', 'a')),
+    wire('w2', pin('p2', 'b'), pin('p3', 'a')),
+    wire('w3', pin('p3', 'b'), pin('p4', 'a')),
+    wire('w4', pin('p4', 'b'), pin('p1', 'b')),
+  ];
+  const openDeck = buildNetlist([source, resistor, led, switchPart], wires);
+  assert.match(openDeck.text, /S_p4 n\d+ 0 p4_ctrl 0 VELXIO_SWITCH/);
+  assert.match(openDeck.text, /V_p4_ctrl p4_ctrl 0 DC 0/);
+  assert.equal(openDeck.switchControlNames.get('p4'), 'V_p4_ctrl');
+  switchPart.closed = true;
+  const closedDeck = buildNetlist([source, resistor, led, switchPart], wires);
+  assert.match(closedDeck.text, /V_p4_ctrl p4_ctrl 0 DC 5/);
+  assert.match(closedDeck.text, /\.model VELXIO_SWITCH SW\(Ron=0\.01 Roff=1G Vt=2\.5 Vh=0\.1\)/);
+  assert.equal(closedDeck.shortedSource, false);
+});

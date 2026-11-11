@@ -1,4 +1,4 @@
-export type PartType = 'source' | 'led' | 'resistor';
+export type PartType = 'source' | 'led' | 'resistor' | 'switch';
 export type Row = 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g' | 'h' | 'i' | 'j';
 export type Rail = 'tp' | 'tn' | 'bp' | 'bn';
 export type Hole = `${number}.${Row}` | `${Rail}.${number}`;
@@ -10,6 +10,7 @@ export interface Part {
   x: number;
   y: number;
   resistance: number;
+  closed?: boolean;
   seated?: { boardId: string; left: Hole; right: Hole };
 }
 export type Endpoint =
@@ -96,6 +97,7 @@ export interface Netlist {
   text: string;
   ledSenseNames: Map<string, string>;
   sourceCurrentNames: string[];
+  switchControlNames: Map<string, string>;
   shortedSource: boolean;
 }
 
@@ -122,6 +124,7 @@ export function buildNetlist(parts: readonly Part[], wires: readonly Wire[]): Ne
   const cards: string[] = ['Tiny Velxio circuit'];
   const ledSenseNames = new Map<string, string>();
   const sourceCurrentNames: string[] = [];
+  const switchControlNames = new Map<string, string>();
   let shortedSource = false;
   for (const part of parts) {
     const a = net(part.id, 'a');
@@ -133,7 +136,14 @@ export function buildNetlist(parts: readonly Part[], wires: readonly Wire[]): Ne
       sourceCurrentNames.push(`v_${part.id}#branch`);
     } else if (part.type === 'resistor') {
       if (a !== b) cards.push(`R_${part.id} ${a} ${b} ${part.resistance}`);
-    } else {
+    } else if (part.type === 'switch') {
+      // A voltage-controlled switch keeps the circuit topology stable while
+      // ngspice advances time. The control source can be altered mid-run.
+      const control = `V_${part.id}_ctrl`;
+      cards.push(`S_${part.id} ${a} ${b} ${part.id}_ctrl 0 VELXIO_SWITCH`);
+      cards.push(`${control} ${part.id}_ctrl 0 DC ${part.closed ? 5 : 0}`);
+      switchControlNames.set(part.id, control);
+    } else if (part.type === 'led') {
       const sense = `V_${part.id}_sense`;
       cards.push(`${sense} ${a} ${part.id}_internal DC 0`);
       cards.push(`D_${part.id} ${part.id}_internal ${b} DRED`);
@@ -141,6 +151,6 @@ export function buildNetlist(parts: readonly Part[], wires: readonly Wire[]): Ne
     }
   }
   for (const name of names.values()) cards.push(`R_bleed_${name} ${name} 0 100Meg`);
-  cards.push('.model DRED D(Is=1e-14 N=2)', '.end');
-  return { text: cards.join('\n'), ledSenseNames, sourceCurrentNames, shortedSource };
+  cards.push('.model DRED D(Is=1e-14 N=2)', '.model VELXIO_SWITCH SW(Ron=0.01 Roff=1G Vt=2.5 Vh=0.1)', '.end');
+  return { text: cards.join('\n'), ledSenseNames, sourceCurrentNames, switchControlNames, shortedSource };
 }

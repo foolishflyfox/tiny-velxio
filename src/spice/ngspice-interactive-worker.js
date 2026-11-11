@@ -123,6 +123,11 @@ self.addEventListener('message', async (event) => {
 			return;
 		}
 
+		if (data.type === 'readLastVecs') {
+			handleReadLastVecs(data.requestId, Array.isArray(data.names) ? data.names : []);
+			return;
+		}
+
 		if (data.type === 'solveState') {
 			handleSolveState(data.requestId, data);
 			return;
@@ -269,6 +274,20 @@ function handleReadVecs(requestId, names) {
 		{ type: 'vecs', requestId, index: packed.index, real: packed.real, imag: packed.imag, ms: packed.ms },
 		packed.transferables,
 	);
+}
+
+// A live transient plot grows throughout the run. Return one scalar per
+// vector so each UI refresh does not copy the entire simulation history.
+function handleReadLastVecs(requestId, names) {
+	const entries = names.map((name) => {
+		const infoPtr = api.getVecInfo(String(name));
+		if (!infoPtr) return { name, value: null };
+		const length = HEAP32[(infoPtr + VECTOR_INFO_LENGTH_OFFSET) >> 2];
+		const realDataPtr = HEAPU32[(infoPtr + VECTOR_INFO_REALDATA_OFFSET) >> 2];
+		if (length <= 0 || !realDataPtr) return { name, value: null };
+		return { name, value: HEAPF64[(realDataPtr >> 3) + length - 1] };
+	});
+	self.postMessage({ type: 'last-vecs', requestId, entries });
 }
 
 /**

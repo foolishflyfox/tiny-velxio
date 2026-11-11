@@ -212,6 +212,15 @@ export class NgSpiceInteractive {
     return out;
   }
 
+  /** Latest real sample of each vector in the live transient plot. */
+  async readLastVecs(names: readonly string[]): Promise<Array<{ name: string; value: number | null }>> {
+    await this.init();
+    const result = await this.request<{ entries: Array<{ name: string; value: number | null }> }>(
+      'readLastVecs', { names: [...names] }, 'last-vecs',
+    );
+    return result.entries;
+  }
+
   /** Worker-side milliseconds of the last `readVecs` (the engine reads,
    *  not the message); for the solve timing breakdown. */
   lastReadVecsMs = 0;
